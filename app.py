@@ -46,6 +46,7 @@ FIELD_FLOW: Tuple[Tuple[str, str], ...] = (
 )
 
 FIELD_HINTS = {
+    "contact": "(Line ID:、脆:、IG:、FB:...(需標明))",
     "order_no": "(9碼)",
     "orig_date": "(月/日，僅單日，限 12 或 01 月)",
     "orig_slot": "(24小時制，如:14:00~15:00)",
