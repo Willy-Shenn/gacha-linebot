@@ -28,8 +28,8 @@ handler = WebhookHandler(CHANNEL_SECRET)
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "gacha.db")
 
-PLACE_ALLOWED = {"MAYDAY LAND": "MAYDAY LAND", "洲際棒球場": "洲際棒球場"}
-PLACE_OPTIONS_TEXT = "地點僅接受：1. MAYDAY LAND  2. 洲際棒球場，可直接輸入代號"
+PLACE_ALLOWED = {"MAYDAY LAND": "MAYDAY LAND", "洲際棒球場": "洲際棒球場", "皆可": "皆可"}
+PLACE_OPTIONS_TEXT = "地點僅接受：1. MAYDAY LAND  2. 洲際棒球場  3. 皆可，可直接輸入代號"
 DISCLAIMER = "本系統僅提供扭蛋交換配對功能，不負責任合金流活動，亦不負任何法律責任"
 
 FIELD_FLOW: Tuple[Tuple[str, str], ...] = (
@@ -260,6 +260,8 @@ def normalize_place(raw: str) -> Optional[str]:
         return "MAYDAY LAND"
     if normalized in {"2", "2.", "2、", "2)", "洲際棒球場"}:
         return "洲際棒球場"
+    if normalized in {"3", "3.", "3、", "3)", "皆可"}:
+        return "皆可"
 
     # 使用者直接輸入名稱時保留原大小寫，英文比對後轉為標準格式
     if cleaned.upper() in PLACE_ALLOWED:
@@ -521,8 +523,13 @@ def try_match_and_notify(new_id: int):
     candidates = c.fetchall()
 
     other = None
+    def place_ok(orig_place: str, desired_place: str) -> bool:
+        return desired_place == "皆可" or orig_place == desired_place
+
     for cand in candidates:
-        if cand["orig_place"] != me["desired_place"] or me["orig_place"] != cand["desired_place"]:
+        if not place_ok(cand["orig_place"], me["desired_place"]):
+            continue
+        if not place_ok(me["orig_place"], cand["desired_place"]):
             continue
 
         cand_pairs = build_desired_pairs(cand)
