@@ -537,11 +537,7 @@ def try_match_and_notify(new_id: int):
         (me["id"],),
     )
     fetched = c.fetchall()
-    # 同一 LINE ID 的條件優先，比較容易先自配成功
-    candidates = sorted(
-        fetched,
-        key=lambda row: (row["line_user_id"] != me["line_user_id"], row["id"]),
-    )
+    candidates = [row for row in fetched if row["line_user_id"] != me["line_user_id"]]
 
     other = None
     def place_ok(orig_place: str, desired_place: str) -> bool:
