@@ -433,16 +433,12 @@ def parse_form_input(text: str) -> Tuple[Dict[str, str], Optional[str], Optional
     for line in lines:
         match = pattern.match(line)
         if not match:
-            if not error_msg:
-                error_msg = f"無法解析此行：{line}"
             continue
 
         label = match.group(1).strip()
         value = match.group(2).strip()
         key = label_to_key(label)
         if key is None:
-            if not error_msg:
-                error_msg = f"無法辨識欄位「{label}」，請確認欄位名稱。"
             continue
 
         normalized, err = validate_field(key, value, data)
