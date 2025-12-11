@@ -545,7 +545,8 @@ def try_match_and_notify(new_id: int):
         """,
         (me["id"],),
     )
-    candidates = cur.fetchall()
+    fetched = cur.fetchall()
+    candidates = [row for row in fetched if row["line_user_id"] != me["line_user_id"]]
 
     other = None
 
