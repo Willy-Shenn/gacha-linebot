@@ -3,6 +3,7 @@ import random
 import re
 import sqlite3
 import string
+from datetime import datetime
 from typing import Dict, Optional, Tuple
 
 from dotenv import load_dotenv
@@ -28,7 +29,7 @@ handler = WebhookHandler(CHANNEL_SECRET)
 DB_PATH = os.path.join(os.path.dirname(__file__), "gacha.db")
 
 PLACE_ALLOWED = {"MAYDAY LAND": "MAYDAY LAND", "洲際棒球場": "洲際棒球場"}
-PLACE_OPTIONS_TEXT = "地點僅接受：1. MAYDAY LAND  2. 洲際棒球場"
+PLACE_OPTIONS_TEXT = "地點僅接受：1. MAYDAY LAND  2. 洲際棒球場，可直接輸入代號"
 
 FIELD_FLOW: Tuple[Tuple[str, str], ...] = (
     ("contact", "聯繫方式"),
@@ -43,10 +44,41 @@ FIELD_FLOW: Tuple[Tuple[str, str], ...] = (
     ("desired_place", "希望交換地點"),
 )
 
+FIELD_HINTS = {
+    "order_no": "(9碼)",
+    "orig_date": "(西元年/月/日)",
+    "orig_slot": "(24小時制，如:14:00~15:00)",
+    "orig_place": f"({PLACE_OPTIONS_TEXT})",
+    "desired_date": "(西元年/月/日)",
+    "desired_slot": "(24小時制，如:14:00~15:00)",
+    "desired_place": f"({PLACE_OPTIONS_TEXT})",
+}
+
 FIELD_LABEL_MAP = {label: key for key, label in FIELD_FLOW}
 
 # key = line_user_id, value = {"mode": str}
 user_states: Dict[str, Dict[str, str]] = {}
+
+
+# ===== 輔助函式 =====
+
+def label_with_hint(key: str) -> str:
+    label = next(label for k, label in FIELD_FLOW if k == key)
+    hint = FIELD_HINTS.get(key)
+    return f"{label}{hint}" if hint else label
+
+
+def canonicalize_label(label: str) -> str:
+    # 移除括號提示字串，取得欄位本名
+    return re.sub(r"\s*（.*?）|\s*\(.*?\)", "", label).strip()
+
+
+def label_to_key(label: str) -> Optional[str]:
+    canonical = canonicalize_label(label)
+    for key, base_label in FIELD_FLOW:
+        if canonicalize_label(base_label) == canonical:
+            return key
+    return None
 
 
 # ===== 資料庫工具 =====
@@ -120,6 +152,18 @@ def cancel_pending_request(line_user_id: str) -> int:
     return deleted
 
 
+def order_no_exists(line_user_id: str, order_no: str) -> bool:
+    conn = get_db_conn()
+    c = conn.cursor()
+    c.execute(
+        "SELECT COUNT(*) FROM exchange_requests WHERE line_user_id = ? AND order_no = ?",
+        (line_user_id, order_no),
+    )
+    exists = c.fetchone()[0] > 0
+    conn.close()
+    return exists
+
+
 def insert_request(data: Dict[str, str], line_user_id: str) -> int:
     verif_code = "".join(random.choices(string.digits, k=6))
 
@@ -183,54 +227,143 @@ def normalize_place(raw: str) -> Optional[str]:
     return None
 
 
+def normalize_order_no(raw: str) -> Optional[str]:
+    cleaned = raw.strip()
+    if not cleaned.isdigit() or len(cleaned) != 9:
+        return None
+    return cleaned
+
+
+def normalize_date(raw: str) -> Optional[str]:
+    cleaned = raw.strip().replace("-", "/")
+    match = re.match(r"^\s*(\d{4})/(\d{1,2})/(\d{1,2})\s*$", cleaned)
+    if not match:
+        return None
+    year, month, day = map(int, match.groups())
+    try:
+        dt = datetime(year, month, day)
+    except ValueError:
+        return None
+    return dt.strftime("%Y/%m/%d")
+
+
+def normalize_slot(raw: str) -> Tuple[Optional[str], Optional[str]]:
+    cleaned = raw.strip()
+    pattern = re.compile(r"^\s*(\d{1,2}):(\d{1,2})\s*[~\-]\s*(\d{1,2}):(\d{1,2})\s*$")
+    match = pattern.match(cleaned)
+    if not match:
+        return None, "格式需為 hh:mm~hh:mm（24小時制）。"
+
+    h1, m1, h2, m2 = map(int, match.groups())
+    if not (0 <= h1 < 24 and 0 <= h2 < 24 and 0 <= m1 < 60 and 0 <= m2 < 60):
+        return None, "時段需為 24 小時制，分鐘需為 00~59。"
+    if (h1, m1) >= (h2, m2):
+        return None, "開始時間需早於結束時間，請重新輸入。"
+
+    return f"{h1:02d}:{m1:02d}~{h2:02d}:{m2:02d}", None
+
+
+def validate_field(key: str, value: str) -> Tuple[Optional[str], Optional[str]]:
+    if key == "order_no":
+        normalized = normalize_order_no(value)
+        if normalized is None:
+            return None, "扭蛋訂單編號需為 9 碼數字。"
+        return normalized, None
+
+    if key in {"orig_date", "desired_date"}:
+        normalized = normalize_date(value)
+        if normalized is None:
+            return None, f"{label_with_hint(key)} 格式需為 yyyy/mm/dd（個位數請補 0）。"
+        return normalized, None
+
+    if key in {"orig_slot", "desired_slot"}:
+        normalized, err = normalize_slot(value)
+        if err:
+            return None, err
+        return normalized, None
+
+    if key in {"orig_place", "desired_place"}:
+        normalized = normalize_place(value)
+        if normalized is None:
+            return None, f"{label_with_hint(key)}，{PLACE_OPTIONS_TEXT}。"
+        return normalized, None
+
+    if not value.strip():
+        return None, f"{label_with_hint(key)} 不可空白。"
+
+    return value.strip(), None
+
+
 def build_form_template() -> str:
-    lines = [f"{idx + 1}. {label}: " for idx, (_key, label) in enumerate(FIELD_FLOW)]
-    lines.append(PLACE_OPTIONS_TEXT)
+    lines = [f"{idx + 1}. {label_with_hint(key)}: " for idx, (key, _label) in enumerate(FIELD_FLOW)]
     return "\n".join(lines)
 
 
 def format_summary(data: Dict[str, str]) -> str:
     lines = []
-    for idx, (key, label) in enumerate(FIELD_FLOW, start=1):
+    for idx, (key, _label) in enumerate(FIELD_FLOW, start=1):
         value = data.get(key, "")
-        lines.append(f"{idx}. {label}: {value}")
+        lines.append(f"{idx}. {label_with_hint(key)}: {value}")
     return "\n".join(lines)
 
 
-def parse_form_input(text: str) -> Tuple[Optional[Dict[str, str]], Optional[str]]:
+def parse_form_input(text: str) -> Tuple[Dict[str, str], Optional[str], Optional[str]]:
     lines = [line.strip() for line in text.splitlines() if line.strip()]
-    if len(lines) < len(FIELD_FLOW):
-        return None, "欄位數量不足，請依格式填寫所有 10 個欄位。"
-
     data: Dict[str, str] = {}
+    error_key: Optional[str] = None
+    error_msg: Optional[str] = None
+
     pattern = re.compile(r"^\s*\d+\.\s*([^:：]+)\s*[:：]\s*(.*)$")
 
     for line in lines:
         match = pattern.match(line)
         if not match:
-            return None, f"無法解析此行：{line}"
+            if not error_msg:
+                error_msg = f"無法解析此行：{line}"
+            continue
 
         label = match.group(1).strip()
         value = match.group(2).strip()
-        key = FIELD_LABEL_MAP.get(label)
+        key = label_to_key(label)
         if key is None:
-            return None, f"無法辨識欄位「{label}」，請確認欄位名稱。"
-        if not value:
-            return None, f"「{label}」不可空白，請補齊。"
+            if not error_msg:
+                error_msg = f"無法辨識欄位「{label}」，請確認欄位名稱。"
+            continue
 
-        if key in {"orig_place", "desired_place"}:
-            place_value = normalize_place(value)
-            if place_value is None:
-                return None, f"「{label}」格式錯誤，{PLACE_OPTIONS_TEXT}"
-            value = place_value
+        normalized, err = validate_field(key, value)
+        if err and not error_msg:
+            error_key = key
+            error_msg = err
+            continue
 
-        data[key] = value
+        if normalized is not None:
+            data[key] = normalized
 
-    missing = [label for key, label in FIELD_FLOW if key not in data]
-    if missing:
-        return None, f"缺少欄位：{', '.join(missing)}"
+    for key, _label in FIELD_FLOW:
+        if key not in data and error_msg is None:
+            error_key = key
+            error_msg = f"缺少欄位：{label_with_hint(key)}"
+            break
 
-    return data, None
+    return data, error_key, error_msg
+
+
+def parse_single_field_input(key: str, text: str) -> Tuple[Optional[str], Optional[str]]:
+    stripped = text.strip()
+    if not stripped:
+        return None, f"{label_with_hint(key)} 不可空白。"
+
+    pattern = re.compile(r"^\s*\d+\.\s*([^:：]+)\s*[:：]\s*(.*)$")
+    match = pattern.match(stripped)
+    if match:
+        label = match.group(1).strip()
+        value = match.group(2).strip()
+        parsed_key = label_to_key(label)
+        if parsed_key and parsed_key != key:
+            return None, f"目前需更新「{label_with_hint(key)}」，請不要更換欄位。"
+        stripped = value
+
+    return validate_field(key, stripped)
 
 
 def build_match_message(me, partner) -> str:
@@ -322,6 +455,7 @@ def build_help_message() -> str:
         "目前提供的指令：\n"
         "- 輸入「登記」開始扭蛋交換登記流程（一次填寫 10 個欄位）。\n"
         "- 輸入「取消」刪除你尚未配對的登記資料。\n"
+        "同一 LINE 使用者可登記多筆，但每個扭蛋訂單編號不得重複。\n"
         "完成登記後系統會自動嘗試配對，成功時將主動推播通知。\n\n"
         "填寫格式範例：\n"
         f"{build_form_template()}"
@@ -361,17 +495,10 @@ def handle_message(event):
         return
 
     if text == "登記":
-        if has_pending_request(user_id):
-            reply = (
-                "你目前已有一筆待配對的登記資料。\n"
-                "若要重新登記，請先輸入「取消」刪除原紀錄。"
-            )
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
-            return
-
         user_states[user_id] = {"mode": "await_form"}
         intro = (
             "將為你進行扭蛋交換登記，請一次填寫以下 10 個欄位並直接回覆：\n"
+            "注意：同一扭蛋訂單編號不可重複登記。\n"
             f"{build_form_template()}"
         )
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=intro))
@@ -379,12 +506,62 @@ def handle_message(event):
 
     state = user_states.get(user_id)
     if state is not None and state.get("mode") == "await_form":
-        data, err = parse_form_input(text)
+        data, error_key, err = parse_form_input(text)
         if err:
+            if error_key:
+                user_states[user_id] = {"mode": "await_fix", "data": data, "pending_key": error_key}
+                prompt = f"{err}\n請重新輸入「{label_with_hint(error_key)}」："
+            else:
+                prompt = f"{err}\n請依下列格式重新輸入：\n{build_form_template()}"
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=prompt))
+            return
+
+        if order_no_exists(user_id, data["order_no"]):
+            user_states[user_id] = {"mode": "await_fix", "data": data, "pending_key": "order_no"}
+            prompt = "此扭蛋訂單編號已登記，請使用不同的 9 碼編號。\n請重新輸入「扭蛋訂單編號(9碼)」："
             line_bot_api.reply_message(
                 event.reply_token,
-                TextSendMessage(text=f"{err}\n\n請依下列格式重新輸入：\n{build_form_template()}"),
+                TextSendMessage(text=prompt),
             )
+            return
+
+        user_states.pop(user_id, None)
+        new_id = insert_request(data, user_id)
+        req = get_request_by_id(new_id)
+        confirm_msg = build_confirm_message(req)
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=confirm_msg))
+        try_match_and_notify(new_id)
+        return
+
+    if state is not None and state.get("mode") == "await_fix":
+        pending_key = state.get("pending_key")
+        data = state.get("data", {})
+        if not pending_key:
+            user_states.pop(user_id, None)
+            help_msg = build_help_message()
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=help_msg))
+            return
+
+        normalized, err = parse_single_field_input(pending_key, text)
+        if err:
+            prompt = f"{err}\n請重新輸入「{label_with_hint(pending_key)}」："
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=prompt))
+            return
+
+        if pending_key == "order_no" and normalized and order_no_exists(user_id, normalized):
+            prompt = "此扭蛋訂單編號已登記，請使用不同的 9 碼編號。\n請重新輸入「扭蛋訂單編號(9碼)」："
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=prompt))
+            return
+
+        if normalized is not None:
+            data[pending_key] = normalized
+
+        missing_fields = [key for key, _label in FIELD_FLOW if key not in data]
+        if missing_fields:
+            next_key = missing_fields[0]
+            user_states[user_id] = {"mode": "await_fix", "data": data, "pending_key": next_key}
+            prompt = f"請補齊「{label_with_hint(next_key)}」："
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=prompt))
             return
 
         user_states.pop(user_id, None)
