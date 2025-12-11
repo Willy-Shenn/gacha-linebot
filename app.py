@@ -423,18 +423,15 @@ def build_desired_pairs(record) -> list:
 
 
 def parse_form_input(text: str) -> Tuple[Dict[str, str], Optional[str], Optional[str]]:
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    pattern = re.compile(
+        r"\s*\d+\.\s*([^:：]+?)\s*[:：]\s*(.*?)\s*(?=(?:\d+\.\s*[^:：]+?\s*[:：])|$)",
+        re.S,
+    )
     data: Dict[str, str] = {}
     error_key: Optional[str] = None
     error_msg: Optional[str] = None
 
-    pattern = re.compile(r"^\s*\d+\.\s*([^:：]+)\s*[:：]\s*(.*)$")
-
-    for line in lines:
-        match = pattern.match(line)
-        if not match:
-            continue
-
+    for match in pattern.finditer(text):
         label = match.group(1).strip()
         value = match.group(2).strip()
         key = label_to_key(label)
