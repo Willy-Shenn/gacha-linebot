@@ -422,14 +422,13 @@ def build_desired_pairs(record) -> list:
     return pairs
 
 
-def parse_form_input(text: str) -> Tuple[Dict[str, str], Optional[str], Optional[str]]:
+def parse_form_input(text: str) -> Tuple[Dict[str, str], list]:
     pattern = re.compile(
         r"\s*\d+\.\s*([^:：]+?)\s*[:：]\s*(.*?)\s*(?=(?:\d+\.\s*[^:：]+?\s*[:：])|$)",
         re.S,
     )
     data: Dict[str, str] = {}
-    error_key: Optional[str] = None
-    error_msg: Optional[str] = None
+    errors: list = []
 
     for match in pattern.finditer(text):
         label = match.group(1).strip()
@@ -439,26 +438,22 @@ def parse_form_input(text: str) -> Tuple[Dict[str, str], Optional[str], Optional
             continue
 
         normalized, err = validate_field(key, value, data)
-        if err and not error_msg:
-            error_key = key
-            error_msg = err
+        if err:
+            errors.append(f"{label_with_hint(key)}：{err}")
             continue
 
         if normalized is not None:
             data[key] = normalized
 
-    if "desired_date" in data and "desired_slot" in data and error_msg is None:
+    if "desired_date" in data and "desired_slot" in data:
         if len(split_multi_values(data["desired_date"])) != len(split_multi_values(data["desired_slot"])):
-            error_key = "desired_slot"
-            error_msg = "希望交換日期與時段數量需一致，請重新確認。"
+            errors.append("希望交換日期與時段數量需一致，請重新確認。")
 
     for key, _label in FIELD_FLOW:
-        if key not in data and error_msg is None:
-            error_key = key
-            error_msg = f"缺少欄位：{label_with_hint(key)}"
-            break
+        if key not in data:
+            errors.append(f"缺少欄位：{label_with_hint(key)}")
 
-    return data, error_key, error_msg
+    return data, errors
 
 
 def parse_single_field_input(key: str, text: str, data: Optional[Dict[str, str]] = None) -> Tuple[Optional[str], Optional[str]]:
@@ -577,8 +572,8 @@ def build_help_message() -> str:
     return (
         "目前提供的指令：\n"
         "- 輸入「登記」開始扭蛋交換登記流程（一次填寫 10 個欄位）。\n"
-        "- 輸入「取消 訂單編號 驗證碼」刪除你尚未配對的登記資料（配對成功後不可取消）。\n"
-        "- 輸入「查詢 訂單編號 驗證碼」查看你填寫的資料與配對狀態。\n"
+        "- 輸入「取消 訂單編號 驗證碼」，例如:取消 查詢 987654321 793921（配對成功後不可取消）。\n"
+        "- 輸入「查詢 訂單編號 驗證碼」，例如:查詢 987654321 793921。\n"
         "同一 LINE 使用者可登記多筆，但每個扭蛋訂單編號不得重複。\n"
         "完成登記後系統會自動嘗試配對，成功時將主動推播通知。\n\n"
         "填寫格式範例：\n"
@@ -612,7 +607,7 @@ def handle_message(event):
         user_states.pop(user_id, None)
         parts = text.split()
         if len(parts) < 3:
-            reply = "取消請輸入：取消 訂單編號 驗證碼\n配對成功後不可取消。"
+            reply = "取消請輸入：取消 訂單編號 驗證碼，例如:取消 查詢 987654321 793921\n配對成功後不可取消。"
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
             return
 
@@ -639,7 +634,7 @@ def handle_message(event):
         user_states.pop(user_id, None)
         parts = text.split()
         if len(parts) < 3:
-            reply = "查詢請輸入：查詢 訂單編號 驗證碼"
+            reply = "查詢請輸入：查詢 訂單編號 驗證碼，例如:查詢 987654321 793921"
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
             return
 
@@ -689,61 +684,12 @@ def handle_message(event):
 
     state = user_states.get(user_id)
     if state is not None and state.get("mode") == "await_form":
-        data, error_key, err = parse_form_input(text)
-        if err:
-            if error_key:
-                user_states[user_id] = {"mode": "await_fix", "data": data, "pending_key": error_key}
-                prompt = f"{err}\n請重新輸入「{label_with_hint(error_key)}」："
-            else:
-                prompt = f"{err}\n請依下列格式重新輸入：\n{build_form_template()}"
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=prompt))
-            return
+        data, errors = parse_form_input(text)
+        if order_no_exists(user_id, data.get("order_no", "")):
+            errors.append("此扭蛋訂單編號已登記，請使用不同的 9 碼編號。")
 
-        if order_no_exists(user_id, data["order_no"]):
-            user_states[user_id] = {"mode": "await_fix", "data": data, "pending_key": "order_no"}
-            prompt = "此扭蛋訂單編號已登記，請使用不同的 9 碼編號。\n請重新輸入「扭蛋訂單編號(9碼)」："
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage(text=prompt),
-            )
-            return
-
-        user_states.pop(user_id, None)
-        new_id = insert_request(data, user_id)
-        req = get_request_by_id(new_id)
-        confirm_msg = build_confirm_message(req)
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=confirm_msg))
-        try_match_and_notify(new_id)
-        return
-
-    if state is not None and state.get("mode") == "await_fix":
-        pending_key = state.get("pending_key")
-        data = state.get("data", {})
-        if not pending_key:
-            user_states.pop(user_id, None)
-            help_msg = build_help_message()
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=help_msg))
-            return
-
-        normalized, err = parse_single_field_input(pending_key, text, data)
-        if err:
-            prompt = f"{err}\n請重新輸入「{label_with_hint(pending_key)}」："
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=prompt))
-            return
-
-        if pending_key == "order_no" and normalized and order_no_exists(user_id, normalized):
-            prompt = "此扭蛋訂單編號已登記，請使用不同的 9 碼編號。\n請重新輸入「扭蛋訂單編號(9碼)」："
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=prompt))
-            return
-
-        if normalized is not None:
-            data[pending_key] = normalized
-
-        missing_fields = [key for key, _label in FIELD_FLOW if key not in data]
-        if missing_fields:
-            next_key = missing_fields[0]
-            user_states[user_id] = {"mode": "await_fix", "data": data, "pending_key": next_key}
-            prompt = f"請補齊「{label_with_hint(next_key)}」："
+        if errors:
+            prompt = "以下欄位需修正：\n" + "\n".join(errors) + f"\n\n請依下列格式重新輸入：\n{build_form_template()}"
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=prompt))
             return
 
