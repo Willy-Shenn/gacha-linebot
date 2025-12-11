@@ -107,12 +107,14 @@ def init_db():
             desired_place TEXT NOT NULL DEFAULT '',
             verif_code TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'pending',
-            match_id INTEGER
+            match_id INTEGER,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
         """
     )
     cur.execute("ALTER TABLE exchange_requests ADD COLUMN IF NOT EXISTS orig_place TEXT NOT NULL DEFAULT ''")
     cur.execute("ALTER TABLE exchange_requests ADD COLUMN IF NOT EXISTS desired_place TEXT NOT NULL DEFAULT ''")
+    cur.execute("ALTER TABLE exchange_requests ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
     conn.commit()
     cur.close()
     conn.close()
@@ -539,11 +541,11 @@ def try_match_and_notify(new_id: int):
         """
         SELECT * FROM exchange_requests
         WHERE status = 'pending' AND id != %s
+        ORDER BY created_at ASC, id ASC
         """,
         (me["id"],),
     )
-    fetched = cur.fetchall()
-    candidates = [row for row in fetched if row["line_user_id"] != me["line_user_id"]]
+    candidates = cur.fetchall()
 
     other = None
 

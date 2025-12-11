@@ -31,13 +31,15 @@ cur.execute(
         desired_place TEXT NOT NULL DEFAULT '',
         verif_code TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'pending',
-        match_id INTEGER
+        match_id INTEGER,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
     """
 )
 
 cur.execute("ALTER TABLE exchange_requests ADD COLUMN IF NOT EXISTS orig_place TEXT NOT NULL DEFAULT ''")
 cur.execute("ALTER TABLE exchange_requests ADD COLUMN IF NOT EXISTS desired_place TEXT NOT NULL DEFAULT ''")
+cur.execute("ALTER TABLE exchange_requests ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
 
 conn.commit()
 cur.close()
