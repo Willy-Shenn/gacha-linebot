@@ -424,16 +424,30 @@ def build_desired_pairs(record) -> list:
 
 
 def parse_form_input(text: str) -> Tuple[Dict[str, str], list]:
-    pattern = re.compile(
-        r"\s*\d+\.\s*([^:：]+?)\s*[:：]\s*(.*?)\s*(?=(?:\d+\.\s*[^:：]+?\s*[:：])|$)",
-        re.S,
-    )
     data: Dict[str, str] = {}
     errors: list = []
 
-    for match in pattern.finditer(text):
-        label = match.group(1).strip()
-        value = match.group(2).strip()
+    chunks = []
+    current = []
+    for line in text.splitlines():
+        if re.match(r"^\s*\d+\.", line):
+            if current:
+                chunks.append("\n".join(current))
+                current = []
+        if line.strip():
+            current.append(line.strip())
+    if current:
+        chunks.append("\n".join(current))
+
+    for chunk in chunks:
+        m = re.match(
+            r"^\s*\d+\.\s*(?P<label>(?:[^:：()]|\([^)]*\))+)\s*[:：]\s*(?P<value>.*)$",
+            chunk,
+            flags=re.S,
+        )
+        if not m:
+            continue
+        label, value = m.group("label").strip(), m.group("value").strip()
         key = label_to_key(label)
         if key is None:
             continue
@@ -462,11 +476,14 @@ def parse_single_field_input(key: str, text: str, data: Optional[Dict[str, str]]
     if not stripped:
         return None, f"{label_with_hint(key)} 不可空白。"
 
-    pattern = re.compile(r"^\s*\d+\.\s*([^:：]+)\s*[:：]\s*(.*)$")
+    pattern = re.compile(
+        r"^\s*\d+\.\s*(?P<label>(?:[^:：()]|\([^)]*\))+)\s*[:：]\s*(?P<value>.*)$",
+        re.S,
+    )
     match = pattern.match(stripped)
     if match:
-        label = match.group(1).strip()
-        value = match.group(2).strip()
+        label = match.group("label").strip()
+        value = match.group("value").strip()
         parsed_key = label_to_key(label)
         if parsed_key and parsed_key != key:
             return None, f"目前需更新「{label_with_hint(key)}」，請不要更換欄位。"
