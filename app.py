@@ -30,6 +30,7 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "gacha.db")
 
 PLACE_ALLOWED = {"MAYDAY LAND": "MAYDAY LAND", "洲際棒球場": "洲際棒球場"}
 PLACE_OPTIONS_TEXT = "地點僅接受：1. MAYDAY LAND  2. 洲際棒球場，可直接輸入代號"
+DISCLAIMER = "本系統僅提供扭蛋交換配對功能，不負責任合金流活動，亦不負任何法律責任"
 
 FIELD_FLOW: Tuple[Tuple[str, str], ...] = (
     ("contact", "聯繫方式"),
@@ -46,11 +47,11 @@ FIELD_FLOW: Tuple[Tuple[str, str], ...] = (
 
 FIELD_HINTS = {
     "order_no": "(9碼)",
-    "orig_date": "(西元年/月/日)",
+    "orig_date": "(月/日，僅單日，限 12 或 01 月)",
     "orig_slot": "(24小時制，如:14:00~15:00)",
     "orig_place": f"({PLACE_OPTIONS_TEXT})",
-    "desired_date": "(西元年/月/日)",
-    "desired_slot": "(24小時制，如:14:00~15:00)",
+    "desired_date": "(月/日，可多日以逗號或頓號分隔，限 12 或 01 月)",
+    "desired_slot": "(24小時制，如:14:00~15:00，可多段以逗號或頓號分隔，需與日期數量一致)",
     "desired_place": f"({PLACE_OPTIONS_TEXT})",
 }
 
@@ -164,6 +165,33 @@ def order_no_exists(line_user_id: str, order_no: str) -> bool:
     return exists
 
 
+def get_request_by_order_and_code(line_user_id: str, order_no: str, verif_code: str):
+    conn = get_db_conn()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT * FROM exchange_requests
+        WHERE line_user_id = ? AND order_no = ? AND verif_code = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (line_user_id, order_no, verif_code),
+    )
+    row = c.fetchone()
+    conn.close()
+    return row
+
+
+def delete_pending_by_id(req_id: int) -> int:
+    conn = get_db_conn()
+    c = conn.cursor()
+    c.execute("DELETE FROM exchange_requests WHERE id = ? AND status = 'pending'", (req_id,))
+    deleted = c.rowcount
+    conn.commit()
+    conn.close()
+    return deleted
+
+
 def insert_request(data: Dict[str, str], line_user_id: str) -> int:
     verif_code = "".join(random.choices(string.digits, k=6))
 
@@ -208,6 +236,20 @@ def get_request_by_id(req_id: int):
     return row
 
 
+def get_partner(req) -> Optional[sqlite3.Row]:
+    if req is None or req["match_id"] is None:
+        return None
+    conn = get_db_conn()
+    c = conn.cursor()
+    c.execute(
+        "SELECT * FROM exchange_requests WHERE match_id = ? AND id != ? LIMIT 1",
+        (req["match_id"], req["id"]),
+    )
+    partner = c.fetchone()
+    conn.close()
+    return partner
+
+
 def normalize_place(raw: str) -> Optional[str]:
     cleaned = raw.strip()
     if not cleaned:
@@ -236,15 +278,22 @@ def normalize_order_no(raw: str) -> Optional[str]:
 
 def normalize_date(raw: str) -> Optional[str]:
     cleaned = raw.strip().replace("-", "/")
-    match = re.match(r"^\s*(\d{4})/(\d{1,2})/(\d{1,2})\s*$", cleaned)
+    match = re.match(r"^\s*(?:(\d{4})/)?(\d{1,2})/(\d{1,2})\s*$", cleaned)
     if not match:
         return None
-    year, month, day = map(int, match.groups())
+
+    _year_str, month_str, day_str = match.groups()
+    month, day = int(month_str), int(day_str)
+    if month not in {1, 12}:
+        return None
+    if not (1 <= day <= 31):
+        return None
+
     try:
-        dt = datetime(year, month, day)
+        dt = datetime(2024 if month == 12 else 2025, month, day)
     except ValueError:
         return None
-    return dt.strftime("%Y/%m/%d")
+    return dt.strftime("%m/%d")
 
 
 def normalize_slot(raw: str) -> Tuple[Optional[str], Optional[str]]:
@@ -263,24 +312,78 @@ def normalize_slot(raw: str) -> Tuple[Optional[str], Optional[str]]:
     return f"{h1:02d}:{m1:02d}~{h2:02d}:{m2:02d}", None
 
 
-def validate_field(key: str, value: str) -> Tuple[Optional[str], Optional[str]]:
+def split_multi_values(raw: str) -> list:
+    return [part.strip() for part in re.split(r"[、,]", raw) if part.strip()]
+
+
+def normalize_desired_dates(raw: str) -> Tuple[Optional[list], Optional[str]]:
+    parts = split_multi_values(raw)
+    if not parts:
+        return None, "希望交換日期不可空白，格式為月/日，可多筆以逗號或頓號分隔。"
+
+    normalized = []
+    for part in parts:
+        date_str = normalize_date(part)
+        if date_str is None:
+            return None, f"日期「{part}」格式錯誤，僅接受 12/xx 或 01/xx。"
+        normalized.append(date_str)
+
+    return normalized, None
+
+
+def normalize_desired_slots(raw: str, expected_count: Optional[int] = None) -> Tuple[Optional[list], Optional[str]]:
+    parts = split_multi_values(raw)
+    if not parts:
+        return None, "希望交換時段不可空白，格式為 hh:mm~hh:mm，可多筆以逗號或頓號分隔。"
+
+    normalized = []
+    for part in parts:
+        slot, err = normalize_slot(part)
+        if err:
+            return None, f"時段「{part}」格式錯誤，需為 24 小時制 hh:mm~hh:mm，且開始早於結束。"
+        normalized.append(slot)
+
+    if expected_count is not None and len(normalized) != expected_count:
+        return None, "希望交換日期與時段數量需一致，請檢查後重新輸入。"
+
+    return normalized, None
+
+
+def validate_field(key: str, value: str, data: Optional[Dict[str, str]] = None) -> Tuple[Optional[str], Optional[str]]:
     if key == "order_no":
         normalized = normalize_order_no(value)
         if normalized is None:
             return None, "扭蛋訂單編號需為 9 碼數字。"
         return normalized, None
 
-    if key in {"orig_date", "desired_date"}:
+    if key == "orig_date":
+        if any(sep in value for sep in [",", "、"]):
+            return None, "原登記日期僅能填寫單一天，請勿輸入區間。"
         normalized = normalize_date(value)
         if normalized is None:
-            return None, f"{label_with_hint(key)} 格式需為 yyyy/mm/dd（個位數請補 0）。"
+            return None, "原登記日期格式需為 12/xx 或 01/xx，請重新輸入。"
         return normalized, None
 
-    if key in {"orig_slot", "desired_slot"}:
+    if key == "orig_slot":
         normalized, err = normalize_slot(value)
         if err:
             return None, err
         return normalized, None
+
+    if key == "desired_date":
+        normalized_list, err = normalize_desired_dates(value)
+        if err:
+            return None, err
+        return ",".join(normalized_list), None
+
+    if key == "desired_slot":
+        expected = None
+        if data and data.get("desired_date"):
+            expected = len(split_multi_values(data["desired_date"]))
+        normalized_list, err = normalize_desired_slots(value, expected_count=expected)
+        if err:
+            return None, err
+        return ",".join(normalized_list), None
 
     if key in {"orig_place", "desired_place"}:
         normalized = normalize_place(value)
@@ -296,6 +399,7 @@ def validate_field(key: str, value: str) -> Tuple[Optional[str], Optional[str]]:
 
 def build_form_template() -> str:
     lines = [f"{idx + 1}. {label_with_hint(key)}: " for idx, (key, _label) in enumerate(FIELD_FLOW)]
+    lines.append(DISCLAIMER)
     return "\n".join(lines)
 
 
@@ -305,6 +409,15 @@ def format_summary(data: Dict[str, str]) -> str:
         value = data.get(key, "")
         lines.append(f"{idx}. {label_with_hint(key)}: {value}")
     return "\n".join(lines)
+
+
+def build_desired_pairs(record) -> list:
+    dates = split_multi_values(record["desired_date"])
+    slots = split_multi_values(record["desired_slot"])
+    pairs = []
+    for idx in range(min(len(dates), len(slots))):
+        pairs.append((dates[idx], slots[idx]))
+    return pairs
 
 
 def parse_form_input(text: str) -> Tuple[Dict[str, str], Optional[str], Optional[str]]:
@@ -330,7 +443,7 @@ def parse_form_input(text: str) -> Tuple[Dict[str, str], Optional[str], Optional
                 error_msg = f"無法辨識欄位「{label}」，請確認欄位名稱。"
             continue
 
-        normalized, err = validate_field(key, value)
+        normalized, err = validate_field(key, value, data)
         if err and not error_msg:
             error_key = key
             error_msg = err
@@ -338,6 +451,11 @@ def parse_form_input(text: str) -> Tuple[Dict[str, str], Optional[str], Optional
 
         if normalized is not None:
             data[key] = normalized
+
+    if "desired_date" in data and "desired_slot" in data and error_msg is None:
+        if len(split_multi_values(data["desired_date"])) != len(split_multi_values(data["desired_slot"])):
+            error_key = "desired_slot"
+            error_msg = "希望交換日期與時段數量需一致，請重新確認。"
 
     for key, _label in FIELD_FLOW:
         if key not in data and error_msg is None:
@@ -348,7 +466,7 @@ def parse_form_input(text: str) -> Tuple[Dict[str, str], Optional[str], Optional
     return data, error_key, error_msg
 
 
-def parse_single_field_input(key: str, text: str) -> Tuple[Optional[str], Optional[str]]:
+def parse_single_field_input(key: str, text: str, data: Optional[Dict[str, str]] = None) -> Tuple[Optional[str], Optional[str]]:
     stripped = text.strip()
     if not stripped:
         return None, f"{label_with_hint(key)} 不可空白。"
@@ -363,7 +481,7 @@ def parse_single_field_input(key: str, text: str) -> Tuple[Optional[str], Option
             return None, f"目前需更新「{label_with_hint(key)}」，請不要更換欄位。"
         stripped = value
 
-    return validate_field(key, stripped)
+    return validate_field(key, stripped, data)
 
 
 def build_match_message(me, partner) -> str:
@@ -376,7 +494,8 @@ def build_match_message(me, partner) -> str:
         f"對方原登記：{partner['orig_date']} {partner['orig_slot']} / {partner['orig_place']}\n"
         f"對方希望交換：{partner['desired_date']} {partner['desired_slot']} / {partner['desired_place']}\n"
         f"對方驗證碼（請互相核對）：{partner['verif_code']}\n"
-        "請盡快互相聯繫並先核對驗證碼以保障安全。"
+        "請盡快互相聯繫並先核對驗證碼以保障安全。\n\n"
+        f"{DISCLAIMER}"
     )
 
 
@@ -389,31 +508,34 @@ def try_match_and_notify(new_id: int):
         conn.close()
         return False
 
+    me_pairs = build_desired_pairs(me)
+
     c.execute(
         """
         SELECT * FROM exchange_requests
-        WHERE status = 'pending'
-          AND id != ?
-          AND orig_date    = ?
-          AND orig_slot    = ?
-          AND orig_place   = ?
-          AND desired_date = ?
-          AND desired_slot = ?
-          AND desired_place = ?
+        WHERE status = 'pending' AND id != ?
         ORDER BY id ASC
-        LIMIT 1
         """,
-        (
-            me["id"],
-            me["desired_date"],
-            me["desired_slot"],
-            me["desired_place"],
-            me["orig_date"],
-            me["orig_slot"],
-            me["orig_place"],
-        ),
+        (me["id"],),
     )
-    other = c.fetchone()
+    candidates = c.fetchall()
+
+    other = None
+    for cand in candidates:
+        if cand["orig_place"] != me["desired_place"] or me["orig_place"] != cand["desired_place"]:
+            continue
+
+        cand_pairs = build_desired_pairs(cand)
+        me_to_other_ok = any(
+            cand["orig_date"] == d and cand["orig_slot"] == s for d, s in me_pairs
+        )
+        other_to_me_ok = any(
+            me["orig_date"] == d and me["orig_slot"] == s for d, s in cand_pairs
+        )
+
+        if me_to_other_ok and other_to_me_ok:
+            other = cand
+            break
 
     if not other:
         conn.close()
@@ -446,7 +568,8 @@ def build_confirm_message(req) -> str:
         f"{summary}\n"
         f"驗證碼: {req['verif_code']}\n\n"
         "系統會自動為你尋找互相需要的交換對象，配對成功時將主動通知。\n"
-        "若要重新登記，可先輸入「取消」刪除待配對資料。"
+        "若要重新登記，可先輸入「取消」刪除待配對資料。\n\n"
+        f"{DISCLAIMER}"
     )
 
 
@@ -454,11 +577,13 @@ def build_help_message() -> str:
     return (
         "目前提供的指令：\n"
         "- 輸入「登記」開始扭蛋交換登記流程（一次填寫 10 個欄位）。\n"
-        "- 輸入「取消」刪除你尚未配對的登記資料。\n"
+        "- 輸入「取消 訂單編號 驗證碼」刪除你尚未配對的登記資料（配對成功後不可取消）。\n"
+        "- 輸入「查詢 訂單編號 驗證碼」查看你填寫的資料與配對狀態。\n"
         "同一 LINE 使用者可登記多筆，但每個扭蛋訂單編號不得重複。\n"
         "完成登記後系統會自動嘗試配對，成功時將主動推播通知。\n\n"
         "填寫格式範例：\n"
-        f"{build_form_template()}"
+        f"{build_form_template()}\n\n"
+        f"{DISCLAIMER}"
     )
 
 
@@ -483,13 +608,70 @@ def handle_message(event):
     user_id = event.source.user_id
     text = event.message.text.strip()
 
-    if text == "取消":
+    if text.startswith("取消"):
         user_states.pop(user_id, None)
-        deleted = cancel_pending_request(user_id)
+        parts = text.split()
+        if len(parts) < 3:
+            reply = "取消請輸入：取消 訂單編號 驗證碼\n配對成功後不可取消。"
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
+            return
+
+        order_no, code = parts[1], parts[2]
+        req = get_request_by_order_and_code(user_id, order_no, code)
+        if not req:
+            reply = "查無此訂單或驗證碼，請確認後再試。"
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
+            return
+        if req["status"] == "matched":
+            reply = "該筆登記已配對成功，無法取消。"
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
+            return
+
+        deleted = delete_pending_by_id(req["id"])
         if deleted:
-            reply = "已為你取消尚未配對的登記資料。若要重新登記，請輸入「登記」。"
+            reply = "已為你取消該筆待配對登記。"
         else:
-            reply = "目前查無你的待配對登記資料。若要新增，請輸入「登記」。"
+            reply = "目前此筆登記已非待配對狀態，無法取消。"
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
+        return
+
+    if text.startswith("查詢"):
+        user_states.pop(user_id, None)
+        parts = text.split()
+        if len(parts) < 3:
+            reply = "查詢請輸入：查詢 訂單編號 驗證碼"
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
+            return
+
+        order_no, code = parts[1], parts[2]
+        req = get_request_by_order_and_code(user_id, order_no, code)
+        if not req:
+            reply = "查無此訂單或驗證碼，請確認後再試。"
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
+            return
+
+        partner = get_partner(req) if req["status"] == "matched" else None
+        status_text = "已配對" if req["status"] == "matched" else "待配對"
+        summary = format_summary({key: req[key] for key, _ in FIELD_FLOW})
+        base_msg = (
+            f"訂單查詢結果（狀態：{status_text}）\n"
+            f"{summary}\n"
+            f"驗證碼: {req['verif_code']}"
+        )
+        if partner:
+            partner_msg = (
+                "\n\n配對對象資訊：\n"
+                f"聯繫方式：{partner['contact']}\n"
+                f"訂單編號：{partner['order_no']}\n"
+                f"手機號碼：{partner['phone']}\n"
+                f"E-mail：{partner['email']}\n"
+                f"原登記：{partner['orig_date']} {partner['orig_slot']} / {partner['orig_place']}\n"
+                f"希望交換：{partner['desired_date']} {partner['desired_slot']} / {partner['desired_place']}\n"
+                f"驗證碼：{partner['verif_code']}"
+            )
+            reply = base_msg + partner_msg + f"\n\n{DISCLAIMER}"
+        else:
+            reply = base_msg + f"\n\n{DISCLAIMER}"
 
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
         return
@@ -498,8 +680,9 @@ def handle_message(event):
         user_states[user_id] = {"mode": "await_form"}
         intro = (
             "將為你進行扭蛋交換登記，請一次填寫以下 10 個欄位並直接回覆：\n"
-            "注意：同一扭蛋訂單編號不可重複登記。\n"
-            f"{build_form_template()}"
+            "注意：同一扭蛋訂單編號不可重複登記；配對成功後不可取消。\n"
+            f"{build_form_template()}\n\n"
+            f"{DISCLAIMER}"
         )
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=intro))
         return
@@ -542,7 +725,7 @@ def handle_message(event):
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=help_msg))
             return
 
-        normalized, err = parse_single_field_input(pending_key, text)
+        normalized, err = parse_single_field_input(pending_key, text, data)
         if err:
             prompt = f"{err}\n請重新輸入「{label_with_hint(pending_key)}」："
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=prompt))
