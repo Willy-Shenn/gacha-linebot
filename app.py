@@ -401,7 +401,6 @@ def validate_field(key: str, value: str, data: Optional[Dict[str, str]] = None) 
 
 def build_form_template() -> str:
     lines = [f"{idx + 1}. {label_with_hint(key)}: " for idx, (key, _label) in enumerate(FIELD_FLOW)]
-    lines.append(DISCLAIMER)
     return "\n".join(lines)
 
 
