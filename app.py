@@ -1,5 +1,6 @@
 import os
 import random
+import re
 import sqlite3
 import string
 from typing import Dict, Optional, Tuple
@@ -26,28 +27,26 @@ handler = WebhookHandler(CHANNEL_SECRET)
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "gacha.db")
 
-PLACE_ALLOWED = {
-    "MAYDAY LAND": "MAYDAY LAND",
-    "洲際棒球場": "洲際棒球場",
-}
-
+PLACE_ALLOWED = {"MAYDAY LAND": "MAYDAY LAND", "洲際棒球場": "洲際棒球場"}
 PLACE_OPTIONS_TEXT = "地點僅接受：1. MAYDAY LAND  2. 洲際棒球場"
 
 FIELD_FLOW: Tuple[Tuple[str, str], ...] = (
-    ("contact", "請輸入你的聯繫方式（例如：Line ID / IG / Telegram）："),
-    ("order_no", "請輸入扭蛋訂單編號："),
-    ("phone", "請輸入手機號碼："),
-    ("email", "請輸入 E-mail："),
-    ("orig_date", "請輸入你原本「登記日期」（例：2025-12-25）："),
-    ("orig_slot", "請輸入你原本「登記時段」（例：13:00-14:00）："),
-    ("orig_place", f"請輸入你原本「登記地點」；{PLACE_OPTIONS_TEXT}："),
-    ("desired_date", "請輸入你想交換的日期（例：2025-12-31）："),
-    ("desired_slot", "請輸入你想交換的時段（例：15:00-16:00）："),
-    ("desired_place", f"請輸入你想交換的地點；{PLACE_OPTIONS_TEXT}："),
+    ("contact", "聯繫方式"),
+    ("order_no", "扭蛋訂單編號"),
+    ("phone", "手機號碼"),
+    ("email", "E-mail"),
+    ("orig_date", "原登記日期"),
+    ("orig_slot", "原登記時段"),
+    ("orig_place", "原登記地點"),
+    ("desired_date", "希望交換日期"),
+    ("desired_slot", "希望交換時段"),
+    ("desired_place", "希望交換地點"),
 )
 
-# key = line_user_id, value = {"step": int, "data": dict}
-user_states: Dict[str, Dict[str, object]] = {}
+FIELD_LABEL_MAP = {label: key for key, label in FIELD_FLOW}
+
+# key = line_user_id, value = {"mode": str}
+user_states: Dict[str, Dict[str, str]] = {}
 
 
 # ===== 資料庫工具 =====
@@ -184,6 +183,56 @@ def normalize_place(raw: str) -> Optional[str]:
     return None
 
 
+def build_form_template() -> str:
+    lines = [f"{idx + 1}. {label}: " for idx, (_key, label) in enumerate(FIELD_FLOW)]
+    lines.append(PLACE_OPTIONS_TEXT)
+    return "\n".join(lines)
+
+
+def format_summary(data: Dict[str, str]) -> str:
+    lines = []
+    for idx, (key, label) in enumerate(FIELD_FLOW, start=1):
+        value = data.get(key, "")
+        lines.append(f"{idx}. {label}: {value}")
+    return "\n".join(lines)
+
+
+def parse_form_input(text: str) -> Tuple[Optional[Dict[str, str]], Optional[str]]:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if len(lines) < len(FIELD_FLOW):
+        return None, "欄位數量不足，請依格式填寫所有 10 個欄位。"
+
+    data: Dict[str, str] = {}
+    pattern = re.compile(r"^\s*\d+\.\s*([^:：]+)\s*[:：]\s*(.*)$")
+
+    for line in lines:
+        match = pattern.match(line)
+        if not match:
+            return None, f"無法解析此行：{line}"
+
+        label = match.group(1).strip()
+        value = match.group(2).strip()
+        key = FIELD_LABEL_MAP.get(label)
+        if key is None:
+            return None, f"無法辨識欄位「{label}」，請確認欄位名稱。"
+        if not value:
+            return None, f"「{label}」不可空白，請補齊。"
+
+        if key in {"orig_place", "desired_place"}:
+            place_value = normalize_place(value)
+            if place_value is None:
+                return None, f"「{label}」格式錯誤，{PLACE_OPTIONS_TEXT}"
+            value = place_value
+
+        data[key] = value
+
+    missing = [label for key, label in FIELD_FLOW if key not in data]
+    if missing:
+        return None, f"缺少欄位：{', '.join(missing)}"
+
+    return data, None
+
+
 def build_match_message(me, partner) -> str:
     return (
         "【扭蛋交換配對成功】\n"
@@ -257,15 +306,12 @@ def try_match_and_notify(new_id: int):
 
 
 def build_confirm_message(req) -> str:
+    data = {key: req[key] for key, _ in FIELD_FLOW}
+    summary = format_summary(data)
     return (
-        "登記完成！以下是你的資料：\n\n"
-        f"聯繫方式：{req['contact']}\n"
-        f"訂單編號：{req['order_no']}\n"
-        f"手機號碼：{req['phone']}\n"
-        f"E-mail：{req['email']}\n"
-        f"原登記：{req['orig_date']} {req['orig_slot']} / {req['orig_place']}\n"
-        f"希望交換：{req['desired_date']} {req['desired_slot']} / {req['desired_place']}\n"
-        f"你的驗證碼：{req['verif_code']}\n\n"
+        "登記完成！以下是你的資料，請確認：\n"
+        f"{summary}\n"
+        f"驗證碼: {req['verif_code']}\n\n"
         "系統會自動為你尋找互相需要的交換對象，配對成功時將主動通知。\n"
         "若要重新登記，可先輸入「取消」刪除待配對資料。"
     )
@@ -274,9 +320,11 @@ def build_confirm_message(req) -> str:
 def build_help_message() -> str:
     return (
         "目前提供的指令：\n"
-        "- 輸入「登記」開始扭蛋交換登記流程。\n"
+        "- 輸入「登記」開始扭蛋交換登記流程（一次填寫 10 個欄位）。\n"
         "- 輸入「取消」刪除你尚未配對的登記資料。\n"
-        "完成登記後系統會自動嘗試配對，成功時將主動推播通知。"
+        "完成登記後系統會自動嘗試配對，成功時將主動推播通知。\n\n"
+        "填寫格式範例：\n"
+        f"{build_form_template()}"
     )
 
 
@@ -321,45 +369,22 @@ def handle_message(event):
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
             return
 
-        user_states[user_id] = {"step": 0, "data": {}}
+        user_states[user_id] = {"mode": "await_form"}
         intro = (
-            "將為你進行扭蛋交換登記，共 10 個步驟。\n"
-            "過程中可隨時輸入「取消」放棄此次登記。\n\n"
-            f"{FIELD_FLOW[0][1]}"
+            "將為你進行扭蛋交換登記，請一次填寫以下 10 個欄位並直接回覆：\n"
+            f"{build_form_template()}"
         )
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=intro))
         return
 
     state = user_states.get(user_id)
-    if state is not None:
-        step = int(state["step"])
-        data = state["data"]
-        field_key, question = FIELD_FLOW[step]
-
-        if not text:
+    if state is not None and state.get("mode") == "await_form":
+        data, err = parse_form_input(text)
+        if err:
             line_bot_api.reply_message(
                 event.reply_token,
-                TextSendMessage(text=f"此欄位不可空白，請重新輸入：{question}"),
+                TextSendMessage(text=f"{err}\n\n請依下列格式重新輸入：\n{build_form_template()}"),
             )
-            return
-
-        if field_key in {"orig_place", "desired_place"}:
-            place = normalize_place(text)
-            if place is None:
-                line_bot_api.reply_message(
-                    event.reply_token,
-                    TextSendMessage(text=f"地點格式不符，{PLACE_OPTIONS_TEXT}，請重新輸入：{question}"),
-                )
-                return
-            data[field_key] = place
-        else:
-            data[field_key] = text
-
-        step += 1
-        if step < len(FIELD_FLOW):
-            state["step"] = step
-            next_question = FIELD_FLOW[step][1]
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=next_question))
             return
 
         user_states.pop(user_id, None)
