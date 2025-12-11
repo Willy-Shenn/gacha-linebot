@@ -410,6 +410,10 @@ def format_summary(data: Dict[str, str]) -> str:
     lines = []
     for idx, (key, _label) in enumerate(FIELD_FLOW, start=1):
         value = data.get(key, "")
+        if key == "desired_date":
+            value = format_desired_pairs_text(data) or value
+        if key == "desired_slot":
+            continue
         lines.append(f"{idx}. {label_with_hint(key)}: {value}")
     return "\n".join(lines)
 
@@ -421,6 +425,13 @@ def build_desired_pairs(record) -> list:
     for idx in range(min(len(dates), len(slots))):
         pairs.append((dates[idx], slots[idx]))
     return pairs
+
+
+def format_desired_pairs_text(record) -> str:
+    pairs = build_desired_pairs(record)
+    if not pairs:
+        return ""
+    return "、".join(f"{d}:{s}" for d, s in pairs)
 
 
 def parse_form_input(text: str) -> Tuple[Dict[str, str], list]:
@@ -500,7 +511,7 @@ def build_match_message(me, partner) -> str:
         f"對方手機號碼：{partner['phone']}\n"
         f"對方 E-mail：{partner['email']}\n"
         f"對方原登記：{partner['orig_date']} {partner['orig_slot']} / {partner['orig_place']}\n"
-        f"對方希望交換：{partner['desired_date']} {partner['desired_slot']} / {partner['desired_place']}\n"
+        f"對方希望交換：{format_desired_pairs_text(partner)} / {partner['desired_place']}\n"
         f"對方驗證碼（請互相核對）：{partner['verif_code']}\n"
         "請盡快互相聯繫並先核對驗證碼以保障安全。\n\n"
         f"{DISCLAIMER}"
@@ -683,7 +694,7 @@ def handle_message(event):
                 f"手機號碼：{partner['phone']}\n"
                 f"E-mail：{partner['email']}\n"
                 f"原登記：{partner['orig_date']} {partner['orig_slot']} / {partner['orig_place']}\n"
-                f"希望交換：{partner['desired_date']} {partner['desired_slot']} / {partner['desired_place']}\n"
+                f"希望交換：{format_desired_pairs_text(partner)} / {partner['desired_place']}\n"
                 f"驗證碼：{partner['verif_code']}"
             )
             reply = base_msg + partner_msg + f"\n\n{DISCLAIMER}"
