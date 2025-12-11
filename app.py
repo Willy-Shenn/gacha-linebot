@@ -1,11 +1,12 @@
 import os
 import random
 import re
-import sqlite3
 import string
 from datetime import datetime
 from typing import Dict, Optional, Tuple
 
+import psycopg2
+import psycopg2.extras
 from dotenv import load_dotenv
 from flask import Flask, abort, request
 from linebot import LineBotApi, WebhookHandler
@@ -19,14 +20,13 @@ app = Flask(__name__)
 
 CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 if not CHANNEL_SECRET or not CHANNEL_ACCESS_TOKEN:
     raise RuntimeError("請先設定 LINE_CHANNEL_SECRET 與 LINE_CHANNEL_ACCESS_TOKEN")
 
 line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
-
-DB_PATH = os.path.join(os.path.dirname(__file__), "gacha.db")
 
 PLACE_ALLOWED = {"MAYDAY LAND": "MAYDAY LAND", "洲際棒球場": "洲際棒球場", "皆可": "皆可"}
 PLACE_OPTIONS_TEXT = "地點僅接受：1. MAYDAY LAND  2. 洲際棒球場  3. 皆可，可直接輸入代號"
@@ -86,12 +86,14 @@ def label_to_key(label: str) -> Optional[str]:
 # ===== 資料庫工具 =====
 
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute(
+    if not DATABASE_URL:
+        raise RuntimeError("未設定 DATABASE_URL，請先於環境變數設定 PostgreSQL 連線字串")
+    conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.DictCursor)
+    cur = conn.cursor()
+    cur.execute(
         """
         CREATE TABLE IF NOT EXISTS exchange_requests (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             line_user_id TEXT NOT NULL,
             contact TEXT NOT NULL,
             order_no TEXT NOT NULL,
@@ -109,86 +111,84 @@ def init_db():
         )
         """
     )
-
-    existing_cols = {row[1] for row in c.execute("PRAGMA table_info(exchange_requests)").fetchall()}
-    migrations = {
-        "orig_place": "ALTER TABLE exchange_requests ADD COLUMN orig_place TEXT NOT NULL DEFAULT ''",
-        "desired_place": "ALTER TABLE exchange_requests ADD COLUMN desired_place TEXT NOT NULL DEFAULT ''",
-    }
-    for col, ddl in migrations.items():
-        if col not in existing_cols:
-            c.execute(ddl)
-
+    cur.execute("ALTER TABLE exchange_requests ADD COLUMN IF NOT EXISTS orig_place TEXT NOT NULL DEFAULT ''")
+    cur.execute("ALTER TABLE exchange_requests ADD COLUMN IF NOT EXISTS desired_place TEXT NOT NULL DEFAULT ''")
     conn.commit()
+    cur.close()
     conn.close()
 
 
 def get_db_conn():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    if not DATABASE_URL:
+        raise RuntimeError("未設定 DATABASE_URL，請先於環境變數設定 PostgreSQL 連線字串")
+    return psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.DictCursor)
 
 
 def has_pending_request(line_user_id: str) -> bool:
     conn = get_db_conn()
-    c = conn.cursor()
-    c.execute(
-        "SELECT COUNT(*) FROM exchange_requests WHERE line_user_id = ? AND status = 'pending'",
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT COUNT(*) FROM exchange_requests WHERE line_user_id = %s AND status = 'pending'",
         (line_user_id,),
     )
-    count = c.fetchone()[0]
+    count = cur.fetchone()[0]
+    cur.close()
     conn.close()
     return count > 0
 
 
 def cancel_pending_request(line_user_id: str) -> int:
     conn = get_db_conn()
-    c = conn.cursor()
-    c.execute(
-        "DELETE FROM exchange_requests WHERE line_user_id = ? AND status = 'pending'",
+    cur = conn.cursor()
+    cur.execute(
+        "DELETE FROM exchange_requests WHERE line_user_id = %s AND status = 'pending'",
         (line_user_id,),
     )
-    deleted = c.rowcount
+    deleted = cur.rowcount
     conn.commit()
+    cur.close()
     conn.close()
     return deleted
 
 
 def order_no_exists(line_user_id: str, order_no: str) -> bool:
     conn = get_db_conn()
-    c = conn.cursor()
-    c.execute(
-        "SELECT COUNT(*) FROM exchange_requests WHERE line_user_id = ? AND order_no = ?",
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT COUNT(*) FROM exchange_requests WHERE line_user_id = %s AND order_no = %s",
         (line_user_id, order_no),
     )
-    exists = c.fetchone()[0] > 0
+    exists = cur.fetchone()[0] > 0
+    cur.close()
     conn.close()
     return exists
 
 
 def get_request_by_order_and_code(line_user_id: str, order_no: str, verif_code: str):
     conn = get_db_conn()
-    c = conn.cursor()
-    c.execute(
+    cur = conn.cursor()
+    cur.execute(
         """
         SELECT * FROM exchange_requests
-        WHERE line_user_id = ? AND order_no = ? AND verif_code = ?
+        WHERE line_user_id = %s AND order_no = %s AND verif_code = %s
         ORDER BY id DESC
         LIMIT 1
         """,
         (line_user_id, order_no, verif_code),
     )
-    row = c.fetchone()
+    row = cur.fetchone()
+    cur.close()
     conn.close()
     return row
 
 
 def delete_pending_by_id(req_id: int) -> int:
     conn = get_db_conn()
-    c = conn.cursor()
-    c.execute("DELETE FROM exchange_requests WHERE id = ? AND status = 'pending'", (req_id,))
-    deleted = c.rowcount
+    cur = conn.cursor()
+    cur.execute("DELETE FROM exchange_requests WHERE id = %s AND status = 'pending'", (req_id,))
+    deleted = cur.rowcount
     conn.commit()
+    cur.close()
     conn.close()
     return deleted
 
@@ -197,15 +197,16 @@ def insert_request(data: Dict[str, str], line_user_id: str) -> int:
     verif_code = "".join(random.choices(string.digits, k=6))
 
     conn = get_db_conn()
-    c = conn.cursor()
-    c.execute(
+    cur = conn.cursor()
+    cur.execute(
         """
         INSERT INTO exchange_requests (
             line_user_id, contact, order_no, phone, email,
             orig_date, orig_slot, orig_place,
             desired_date, desired_slot, desired_place,
             verif_code, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending')
+        RETURNING id
         """,
         (
             line_user_id,
@@ -222,31 +223,34 @@ def insert_request(data: Dict[str, str], line_user_id: str) -> int:
             verif_code,
         ),
     )
-    new_id = c.lastrowid
+    new_id = cur.fetchone()[0]
     conn.commit()
+    cur.close()
     conn.close()
     return new_id
 
 
 def get_request_by_id(req_id: int):
     conn = get_db_conn()
-    c = conn.cursor()
-    c.execute("SELECT * FROM exchange_requests WHERE id = ?", (req_id,))
-    row = c.fetchone()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM exchange_requests WHERE id = %s", (req_id,))
+    row = cur.fetchone()
+    cur.close()
     conn.close()
     return row
 
 
-def get_partner(req) -> Optional[sqlite3.Row]:
+def get_partner(req) -> Optional[dict]:
     if req is None or req["match_id"] is None:
         return None
     conn = get_db_conn()
-    c = conn.cursor()
-    c.execute(
-        "SELECT * FROM exchange_requests WHERE match_id = ? AND id != ? LIMIT 1",
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT * FROM exchange_requests WHERE match_id = %s AND id != %s LIMIT 1",
         (req["match_id"], req["id"]),
     )
-    partner = c.fetchone()
+    partner = cur.fetchone()
+    cur.close()
     conn.close()
     return partner
 
@@ -521,26 +525,28 @@ def build_match_message(me, partner) -> str:
 
 def try_match_and_notify(new_id: int):
     conn = get_db_conn()
-    c = conn.cursor()
-    c.execute("SELECT * FROM exchange_requests WHERE id = ?", (new_id,))
-    me = c.fetchone()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM exchange_requests WHERE id = %s", (new_id,))
+    me = cur.fetchone()
     if not me or me["status"] != "pending":
+        cur.close()
         conn.close()
         return False
 
     me_pairs = build_desired_pairs(me)
 
-    c.execute(
+    cur.execute(
         """
         SELECT * FROM exchange_requests
-        WHERE status = 'pending' AND id != ?
+        WHERE status = 'pending' AND id != %s
         """,
         (me["id"],),
     )
-    fetched = c.fetchall()
+    fetched = cur.fetchall()
     candidates = [row for row in fetched if row["line_user_id"] != me["line_user_id"]]
 
     other = None
+
     def place_ok(orig_place: str, desired_place: str) -> bool:
         return desired_place == "皆可" or orig_place == desired_place
 
@@ -563,15 +569,17 @@ def try_match_and_notify(new_id: int):
             break
 
     if not other:
+        cur.close()
         conn.close()
         return False
 
     match_id = min(me["id"], other["id"])
-    c.execute(
-        "UPDATE exchange_requests SET status = 'matched', match_id = ? WHERE id IN (?, ?)",
+    cur.execute(
+        "UPDATE exchange_requests SET status = 'matched', match_id = %s WHERE id IN (%s, %s)",
         (match_id, me["id"], other["id"]),
     )
     conn.commit()
+    cur.close()
     conn.close()
 
     try:
