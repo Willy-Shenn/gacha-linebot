@@ -49,7 +49,7 @@ FIELD_HINTS = {
     "order_no": "(9碼)",
     "orig_date": "(月/日，僅單日，限 12 或 01 月)",
     "orig_slot": "(24小時制，如:14:00~15:00)",
-    "orig_place": f"({PLACE_OPTIONS_TEXT})",
+    "orig_place": f"({PLACE_OPTIONS_TEXT}，原登記僅接受 1 或 2)",
     "desired_date": "(月/日，可多日以逗號或頓號分隔，限 12 或 01 月)",
     "desired_slot": "(24小時制，如:14:00~15:00，可多段以逗號或頓號分隔，需與日期數量一致)",
     "desired_place": f"({PLACE_OPTIONS_TEXT})",
@@ -391,6 +391,8 @@ def validate_field(key: str, value: str, data: Optional[Dict[str, str]] = None) 
         normalized = normalize_place(value)
         if normalized is None:
             return None, f"{label_with_hint(key)}，{PLACE_OPTIONS_TEXT}。"
+        if key == "orig_place" and normalized == "皆可":
+            return None, "原登記地點不可選擇「皆可」，請輸入 1 或 2。"
         return normalized, None
 
     if not value.strip():
