@@ -1,7 +1,5 @@
 import os
-import random
 import re
-import string
 import threading
 import time
 from datetime import datetime
@@ -103,7 +101,6 @@ def init_db():
             desired_date TEXT NOT NULL,
             desired_slot TEXT NOT NULL,
             desired_place TEXT NOT NULL DEFAULT '',
-            verif_code TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'pending',
             match_id INTEGER,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -113,6 +110,7 @@ def init_db():
     cur.execute("ALTER TABLE exchange_requests ADD COLUMN IF NOT EXISTS orig_place TEXT NOT NULL DEFAULT ''")
     cur.execute("ALTER TABLE exchange_requests ADD COLUMN IF NOT EXISTS desired_place TEXT NOT NULL DEFAULT ''")
     cur.execute("ALTER TABLE exchange_requests ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+    cur.execute("ALTER TABLE exchange_requests DROP COLUMN IF EXISTS verif_code")
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS match_blocks (
@@ -177,17 +175,17 @@ def order_no_exists(line_user_id: str, order_no: str) -> bool:
     return exists
 
 
-def get_request_by_order_and_code(line_user_id: str, order_no: str, verif_code: str):
+def get_request_by_order(line_user_id: str, order_no: str):
     conn = get_db_conn()
     cur = conn.cursor()
     cur.execute(
         """
         SELECT * FROM exchange_requests
-        WHERE line_user_id = %s AND order_no = %s AND verif_code = %s
+        WHERE line_user_id = %s AND order_no = %s
         ORDER BY id DESC
         LIMIT 1
         """,
-        (line_user_id, order_no, verif_code),
+        (line_user_id, order_no),
     )
     row = cur.fetchone()
     cur.close()
@@ -207,8 +205,6 @@ def delete_pending_by_id(req_id: int) -> int:
 
 
 def insert_request(data: Dict[str, str], line_user_id: str) -> int:
-    verif_code = "".join(random.choices(string.digits, k=6))
-
     conn = get_db_conn()
     cur = conn.cursor()
     cur.execute(
@@ -217,7 +213,7 @@ def insert_request(data: Dict[str, str], line_user_id: str) -> int:
             line_user_id, contact, order_no,
             orig_date, orig_slot, orig_place,
             desired_date, desired_slot, desired_place,
-            verif_code, status
+            status
         ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending')
         RETURNING id
         """,
@@ -231,7 +227,6 @@ def insert_request(data: Dict[str, str], line_user_id: str) -> int:
             data["desired_date"],
             data["desired_slot"],
             data["desired_place"],
-            verif_code,
         ),
     )
     new_id = cur.fetchone()[0]
@@ -297,33 +292,28 @@ def is_blocked_pair(id1: int, id2: int) -> bool:
     return blocked
 
 
-def unbind_match(line_user_id: str, order_no: str, my_code: str, partner_code: str):
+def unbind_match(line_user_id: str, order_no: str):
     conn = get_db_conn()
     cur = conn.cursor()
     cur.execute(
         """
         SELECT * FROM exchange_requests
-        WHERE line_user_id = %s AND order_no = %s AND verif_code = %s AND status = 'matched'
+        WHERE line_user_id = %s AND order_no = %s AND status = 'matched'
         LIMIT 1
         """,
-        (line_user_id, order_no, my_code),
+        (line_user_id, order_no),
     )
     me = cur.fetchone()
     if not me:
         cur.close()
         conn.close()
-        return None, None, "查無配對中的此訂單或驗證碼不符，無法解除。"
+        return None, None, "查無配對中的此訂單，無法解除。"
 
     partner = get_partner(me)
     if not partner or partner["status"] != "matched":
         cur.close()
         conn.close()
         return None, None, "查無對應的配對對象，請稍後再試。"
-
-    if partner["verif_code"] != partner_code:
-        cur.close()
-        conn.close()
-        return None, None, "對方驗證碼不符，無法解除綁定。"
 
     cur.execute(
         "UPDATE exchange_requests SET status = 'pending', match_id = NULL WHERE id IN (%s, %s)",
@@ -619,8 +609,7 @@ def build_match_message(me, partner) -> str:
         f"對方訂單編號：{partner['order_no']}\n"
         f"對方原登記：{partner['orig_date']} {partner['orig_slot']} / {partner['orig_place']}\n"
         f"對方希望交換：{format_desired_pairs_text(partner)} / {partner['desired_place']}\n"
-        f"對方驗證碼（請互相核對）：{partner['verif_code']}\n"
-        "請盡快互相聯繫並先核對驗證碼以保障安全。\n\n"
+        "請盡快互相聯繫以保障安全。\n\n"
         f"{DISCLAIMER}"
     )
 
@@ -704,7 +693,6 @@ def build_confirm_message(req) -> str:
     return (
         "登記完成！以下是你的資料，請確認：\n"
         f"{summary}\n"
-        f"驗證碼: {req['verif_code']}\n\n"
         "系統會自動為你尋找互相需要的交換對象，配對成功時將主動通知。\n"
         "若要重新登記，可先輸入「取消」刪除待配對資料。\n\n"
         f"{DISCLAIMER}"
@@ -715,9 +703,9 @@ def build_help_message() -> str:
     return (
         "目前提供的指令：\n"
         "- 輸入「登記」開始扭蛋交換登記流程（一次填寫 8 個欄位）。\n"
-        "- 輸入「取消 訂單編號 驗證碼」，例如:取消 查詢 987654321 793921。\n"
-        "- 輸入「查詢 訂單編號 驗證碼」，例如:查詢 987654321 793921。\n"
-        "- 輸入「解除 訂單編號 你的驗證碼 對方驗證碼」，解除已配對的資料並回到待配對，例如:解除 987654321 793921 552503。\n"
+        "- 輸入「取消 訂單編號」，例如:取消 987654321。\n"
+        "- 輸入「查詢 訂單編號」，例如:查詢 987654321。\n"
+        "- 輸入「解除 訂單編號」，解除已配對的資料並回到待配對，例如:解除 987654321。\n"
         "同一 LINE 使用者可登記多筆，但每個扭蛋訂單編號不得重複。\n"
         "完成登記後系統會自動嘗試配對，成功時將主動推播通知。\n\n"
         "填寫格式範例：\n"
@@ -753,20 +741,20 @@ def handle_message(event):
     if text.startswith("取消"):
         user_states.pop(user_id, None)
         parts = text.split()
-        if len(parts) < 3:
-            reply = "取消請輸入：取消 訂單編號 驗證碼，例如:取消 查詢 987654321 793921。"
+        if len(parts) < 2:
+            reply = "取消請輸入：取消 訂單編號，例如:取消 987654321。"
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
             return
 
-        order_no, code = parts[1], parts[2]
-        req = get_request_by_order_and_code(user_id, order_no, code)
+        order_no = parts[1]
+        req = get_request_by_order(user_id, order_no)
         if not req:
-            reply = "查無此訂單或驗證碼，請確認後再試。"
+            reply = "查無此訂單，請確認後再試。"
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
             return
 
         if req["status"] == "matched":
-            reply = "該筆登記已配對成功，請使用「解除 訂單編號 你的驗證碼 對方驗證碼」解除配對，例如:解除 987654321 793921 552503。"
+            reply = "該筆登記已配對成功，請使用「解除 訂單編號」解除配對，例如:解除 987654321。"
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
             return
 
@@ -781,15 +769,15 @@ def handle_message(event):
     if text.startswith("查詢"):
         user_states.pop(user_id, None)
         parts = text.split()
-        if len(parts) < 3:
-            reply = "查詢請輸入：查詢 訂單編號 驗證碼，例如:查詢 987654321 793921"
+        if len(parts) < 2:
+            reply = "查詢請輸入：查詢 訂單編號，例如:查詢 987654321"
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
             return
 
-        order_no, code = parts[1], parts[2]
-        req = get_request_by_order_and_code(user_id, order_no, code)
+        order_no = parts[1]
+        req = get_request_by_order(user_id, order_no)
         if not req:
-            reply = "查無此訂單或驗證碼，請確認後再試。"
+            reply = "查無此訂單，請確認後再試。"
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
             return
 
@@ -798,8 +786,7 @@ def handle_message(event):
         summary = format_summary({key: req[key] for key, _ in FIELD_FLOW})
         base_msg = (
             f"訂單查詢結果（狀態：{status_text}）\n"
-            f"{summary}\n"
-            f"驗證碼: {req['verif_code']}"
+            f"{summary}"
         )
         if partner:
             partner_msg = (
@@ -807,8 +794,7 @@ def handle_message(event):
                 f"聯繫方式：{partner['contact']}\n"
                 f"訂單編號：{partner['order_no']}\n"
                 f"原登記：{partner['orig_date']} {partner['orig_slot']} / {partner['orig_place']}\n"
-                f"希望交換：{format_desired_pairs_text(partner)} / {partner['desired_place']}\n"
-                f"驗證碼：{partner['verif_code']}"
+                f"希望交換：{format_desired_pairs_text(partner)} / {partner['desired_place']}"
             )
             reply = base_msg + partner_msg + f"\n\n{DISCLAIMER}"
         else:
@@ -820,13 +806,13 @@ def handle_message(event):
     if text.startswith("解除"):
         user_states.pop(user_id, None)
         parts = text.split()
-        if len(parts) < 4:
-            reply = "解除請輸入：解除 訂單編號 你的驗證碼 對方驗證碼，例如:解除 987654321 793921 552503。"
+        if len(parts) < 2:
+            reply = "解除請輸入：解除 訂單編號，例如:解除 987654321。"
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
             return
 
-        order_no, my_code, partner_code = parts[1], parts[2], parts[3]
-        me, partner, err = unbind_match(user_id, order_no, my_code, partner_code)
+        order_no = parts[1]
+        me, partner, err = unbind_match(user_id, order_no)
         if err:
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=err))
             return
