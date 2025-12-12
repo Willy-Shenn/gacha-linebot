@@ -754,7 +754,7 @@ def handle_message(event):
         user_states.pop(user_id, None)
         parts = text.split()
         if len(parts) < 3:
-            reply = "取消請輸入：取消 訂單編號 驗證碼，例如:取消 查詢 987654321 793921\n配對成功後不可取消。"
+            reply = "取消請輸入：取消 訂單編號 驗證碼，例如:取消 查詢 987654321 793921。"
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
             return
 
@@ -764,8 +764,9 @@ def handle_message(event):
             reply = "查無此訂單或驗證碼，請確認後再試。"
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
             return
+
         if req["status"] == "matched":
-            reply = "該筆登記已配對成功，無法取消。"
+            reply = "該筆登記已配對成功，請使用「解除 訂單編號 你的驗證碼 對方驗證碼」解除配對。"
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
             return
 
@@ -773,7 +774,7 @@ def handle_message(event):
         if deleted:
             reply = "已為你取消該筆待配對登記。"
         else:
-            reply = "目前此筆登記已非待配對狀態，無法取消。"
+            reply = "目前此筆登記已非待配對狀態，請確認後再試。"
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
         return
 
@@ -853,7 +854,7 @@ def handle_message(event):
         user_states[user_id] = {"mode": "await_form"}
         intro = (
             "將為你進行扭蛋交換登記，請一次填寫以下 10 個欄位並直接回覆：\n"
-            "注意：同一扭蛋訂單編號不可重複登記；配對成功後不可取消。\n"
+            "注意：同一扭蛋訂單編號不可重複登記。\n"
             f"{build_form_template()}\n\n"
             f"{DISCLAIMER}"
         )
