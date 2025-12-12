@@ -29,7 +29,7 @@ line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
 PLACE_ALLOWED = {"MAYDAY LAND": "MAYDAY LAND", "洲際棒球場": "洲際棒球場", "皆可": "皆可"}
-PLACE_OPTIONS_TEXT = "地點僅接受：1. MAYDAY LAND  2. 洲際棒球場  3. 皆可，可直接輸入代號"
+PLACE_OPTIONS_TEXT = "地點僅接受：1. MAYDAY LAND  2. 洲際棒球場，可直接輸入代號"
 DISCLAIMER = "本系統僅提供扭蛋交換配對功能，不負責任合金流活動，亦不負任何法律責任"
 
 FIELD_FLOW: Tuple[Tuple[str, str], ...] = (
@@ -48,7 +48,7 @@ FIELD_HINTS = {
     "order_no": "(9碼)",
     "orig_date": "(月/日，僅單日，限 12 或 01 月)",
     "orig_slot": "(24小時制，如:14:00~15:00)",
-    "orig_place": f"({PLACE_OPTIONS_TEXT}，原登記僅接受 1 或 2)",
+    "orig_place": f"({PLACE_OPTIONS_TEXT})",
     "desired_date": "(月/日，可多日以逗號或頓號分隔，限 12 或 01 月)",
     "desired_slot": "(24小時制，如:14:00~15:00，可多段以逗號或頓號分隔，需與日期數量一致)",
     "desired_place": f"({PLACE_OPTIONS_TEXT})",
