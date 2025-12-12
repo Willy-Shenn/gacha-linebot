@@ -292,7 +292,7 @@ def is_blocked_pair(id1: int, id2: int) -> bool:
     return blocked
 
 
-def unbind_match(line_user_id: str, order_no: str):
+def unbind_match(line_user_id: str, order_no: str, partner_order: str):
     conn = get_db_conn()
     cur = conn.cursor()
     cur.execute(
@@ -314,6 +314,10 @@ def unbind_match(line_user_id: str, order_no: str):
         cur.close()
         conn.close()
         return None, None, "查無對應的配對對象，請稍後再試。"
+    if partner["order_no"] != partner_order:
+        cur.close()
+        conn.close()
+        return None, None, "對方訂單編號不符，無法解除。"
 
     cur.execute(
         "UPDATE exchange_requests SET status = 'pending', match_id = NULL WHERE id IN (%s, %s)",
@@ -406,7 +410,7 @@ def normalize_slot(raw: str) -> Tuple[Optional[str], Optional[str]]:
 
     h1, m1, h2, m2 = map(int, match.groups())
     if not (0 <= h1 < 24 and 0 <= h2 < 24 and 0 <= m1 < 60 and 0 <= m2 < 60):
-        return None, "時段需為 24 小時制，分鐘需為 00~59。"
+        return None, "時段需為 24 小時制。"
     if (h1, m1) >= (h2, m2):
         return None, "開始時間需早於結束時間，請重新輸入。"
 
@@ -705,7 +709,7 @@ def build_help_message() -> str:
         "- 輸入「登記」開始扭蛋交換登記流程（一次填寫 8 個欄位）。\n"
         "- 輸入「取消 訂單編號」，例如:取消 987654321。\n"
         "- 輸入「查詢 訂單編號」，例如:查詢 987654321。\n"
-        "- 輸入「解除 訂單編號」，解除已配對的資料並回到待配對，例如:解除 987654321。\n"
+        "- 輸入「解除 我的訂單編號 對方訂單編號」，解除已配對的資料並回到待配對，例如:解除 987654321 123450987。\n"
         "同一 LINE 使用者可登記多筆，但每個扭蛋訂單編號不得重複。\n"
         "完成登記後系統會自動嘗試配對，成功時將主動推播通知。\n\n"
         "填寫格式範例：\n"
@@ -806,13 +810,13 @@ def handle_message(event):
     if text.startswith("解除"):
         user_states.pop(user_id, None)
         parts = text.split()
-        if len(parts) < 2:
-            reply = "解除請輸入：解除 訂單編號，例如:解除 987654321。"
+        if len(parts) < 3:
+            reply = "解除請輸入：解除 我的訂單編號 對方訂單編號，例如:解除 987654321 123450987。"
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
             return
 
-        order_no = parts[1]
-        me, partner, err = unbind_match(user_id, order_no)
+        order_no, partner_order = parts[1], parts[2]
+        me, partner, err = unbind_match(user_id, order_no, partner_order)
         if err:
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=err))
             return
