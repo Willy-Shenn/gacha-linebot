@@ -113,6 +113,17 @@ def init_db():
     cur.execute("ALTER TABLE exchange_requests ADD COLUMN IF NOT EXISTS orig_place TEXT NOT NULL DEFAULT ''")
     cur.execute("ALTER TABLE exchange_requests ADD COLUMN IF NOT EXISTS desired_place TEXT NOT NULL DEFAULT ''")
     cur.execute("ALTER TABLE exchange_requests ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS match_blocks (
+            id SERIAL PRIMARY KEY,
+            req_id_a INTEGER NOT NULL,
+            req_id_b INTEGER NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            CONSTRAINT uniq_pair UNIQUE (req_id_a, req_id_b)
+        )
+        """
+    )
     cur.execute("ALTER TABLE exchange_requests DROP COLUMN IF EXISTS phone")
     cur.execute("ALTER TABLE exchange_requests DROP COLUMN IF EXISTS email")
     conn.commit()
@@ -255,6 +266,37 @@ def get_partner(req) -> Optional[dict]:
     return partner
 
 
+def add_block_pair(id1: int, id2: int):
+    a, b = sorted((id1, id2))
+    conn = get_db_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO match_blocks (req_id_a, req_id_b)
+        VALUES (%s, %s)
+        ON CONFLICT DO NOTHING
+        """,
+        (a, b),
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def is_blocked_pair(id1: int, id2: int) -> bool:
+    a, b = sorted((id1, id2))
+    conn = get_db_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT 1 FROM match_blocks WHERE req_id_a = %s AND req_id_b = %s LIMIT 1",
+        (a, b),
+    )
+    blocked = cur.fetchone() is not None
+    cur.close()
+    conn.close()
+    return blocked
+
+
 def unbind_match(line_user_id: str, order_no: str, my_code: str, partner_code: str):
     conn = get_db_conn()
     cur = conn.cursor()
@@ -290,6 +332,7 @@ def unbind_match(line_user_id: str, order_no: str, my_code: str, partner_code: s
     conn.commit()
     cur.close()
     conn.close()
+    add_block_pair(me["id"], partner["id"])
     return me, partner, None
 
 
@@ -611,6 +654,8 @@ def try_match_and_notify(new_id: int):
         return desired_place == "皆可" or orig_place == desired_place
 
     for cand in candidates:
+        if is_blocked_pair(me["id"], cand["id"]):
+            continue
         if not place_ok(cand["orig_place"], me["desired_place"]):
             continue
         if not place_ok(me["orig_place"], cand["desired_place"]):

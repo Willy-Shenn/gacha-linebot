@@ -41,6 +41,18 @@ cur.execute("ALTER TABLE exchange_requests ADD COLUMN IF NOT EXISTS created_at T
 cur.execute("ALTER TABLE exchange_requests DROP COLUMN IF EXISTS phone")
 cur.execute("ALTER TABLE exchange_requests DROP COLUMN IF EXISTS email")
 
+cur.execute(
+    """
+    CREATE TABLE IF NOT EXISTS match_blocks (
+        id SERIAL PRIMARY KEY,
+        req_id_a INTEGER NOT NULL,
+        req_id_b INTEGER NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        CONSTRAINT uniq_pair UNIQUE (req_id_a, req_id_b)
+    )
+    """
+)
+
 conn.commit()
 cur.close()
 conn.close()
