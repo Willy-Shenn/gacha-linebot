@@ -35,8 +35,6 @@ DISCLAIMER = "本系統僅提供扭蛋交換配對功能，不負責任合金流
 FIELD_FLOW: Tuple[Tuple[str, str], ...] = (
     ("contact", "聯繫方式"),
     ("order_no", "扭蛋訂單編號"),
-    ("phone", "手機號碼"),
-    ("email", "E-mail"),
     ("orig_date", "原登記日期"),
     ("orig_slot", "原登記時段"),
     ("orig_place", "原登記地點"),
@@ -97,8 +95,6 @@ def init_db():
             line_user_id TEXT NOT NULL,
             contact TEXT NOT NULL,
             order_no TEXT NOT NULL,
-            phone TEXT NOT NULL,
-            email TEXT NOT NULL,
             orig_date TEXT NOT NULL,
             orig_slot TEXT NOT NULL,
             orig_place TEXT NOT NULL DEFAULT '',
@@ -115,6 +111,8 @@ def init_db():
     cur.execute("ALTER TABLE exchange_requests ADD COLUMN IF NOT EXISTS orig_place TEXT NOT NULL DEFAULT ''")
     cur.execute("ALTER TABLE exchange_requests ADD COLUMN IF NOT EXISTS desired_place TEXT NOT NULL DEFAULT ''")
     cur.execute("ALTER TABLE exchange_requests ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+    cur.execute("ALTER TABLE exchange_requests DROP COLUMN IF EXISTS phone")
+    cur.execute("ALTER TABLE exchange_requests DROP COLUMN IF EXISTS email")
     conn.commit()
     cur.close()
     conn.close()
@@ -203,19 +201,17 @@ def insert_request(data: Dict[str, str], line_user_id: str) -> int:
     cur.execute(
         """
         INSERT INTO exchange_requests (
-            line_user_id, contact, order_no, phone, email,
+            line_user_id, contact, order_no,
             orig_date, orig_slot, orig_place,
             desired_date, desired_slot, desired_place,
             verif_code, status
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending')
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending')
         RETURNING id
         """,
         (
             line_user_id,
             data["contact"],
             data["order_no"],
-            data["phone"],
-            data["email"],
             data["orig_date"],
             data["orig_slot"],
             data["orig_place"],
@@ -515,8 +511,6 @@ def build_match_message(me, partner) -> str:
         "【扭蛋交換配對成功】\n"
         f"對方聯繫方式：{partner['contact']}\n"
         f"對方訂單編號：{partner['order_no']}\n"
-        f"對方手機號碼：{partner['phone']}\n"
-        f"對方 E-mail：{partner['email']}\n"
         f"對方原登記：{partner['orig_date']} {partner['orig_slot']} / {partner['orig_place']}\n"
         f"對方希望交換：{format_desired_pairs_text(partner)} / {partner['desired_place']}\n"
         f"對方驗證碼（請互相核對）：{partner['verif_code']}\n"
@@ -699,8 +693,6 @@ def handle_message(event):
                 "\n\n配對對象資訊：\n"
                 f"聯繫方式：{partner['contact']}\n"
                 f"訂單編號：{partner['order_no']}\n"
-                f"手機號碼：{partner['phone']}\n"
-                f"E-mail：{partner['email']}\n"
                 f"原登記：{partner['orig_date']} {partner['orig_slot']} / {partner['orig_place']}\n"
                 f"希望交換：{format_desired_pairs_text(partner)} / {partner['desired_place']}\n"
                 f"驗證碼：{partner['verif_code']}"

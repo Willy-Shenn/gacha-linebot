@@ -21,8 +21,6 @@ cur.execute(
         line_user_id TEXT NOT NULL,
         contact TEXT NOT NULL,
         order_no TEXT NOT NULL,
-        phone TEXT NOT NULL,
-        email TEXT NOT NULL,
         orig_date TEXT NOT NULL,
         orig_slot TEXT NOT NULL,
         orig_place TEXT NOT NULL DEFAULT '',
@@ -40,6 +38,8 @@ cur.execute(
 cur.execute("ALTER TABLE exchange_requests ADD COLUMN IF NOT EXISTS orig_place TEXT NOT NULL DEFAULT ''")
 cur.execute("ALTER TABLE exchange_requests ADD COLUMN IF NOT EXISTS desired_place TEXT NOT NULL DEFAULT ''")
 cur.execute("ALTER TABLE exchange_requests ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+cur.execute("ALTER TABLE exchange_requests DROP COLUMN IF EXISTS phone")
+cur.execute("ALTER TABLE exchange_requests DROP COLUMN IF EXISTS email")
 
 conn.commit()
 cur.close()
