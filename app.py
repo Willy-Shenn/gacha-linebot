@@ -714,7 +714,7 @@ def build_confirm_message(req) -> str:
 def build_help_message() -> str:
     return (
         "目前提供的指令：\n"
-        "- 輸入「登記」開始扭蛋交換登記流程（一次填寫 10 個欄位）。\n"
+        "- 輸入「登記」開始扭蛋交換登記流程（一次填寫 8 個欄位）。\n"
         "- 輸入「取消 訂單編號 驗證碼」，例如:取消 查詢 987654321 793921。\n"
         "- 輸入「查詢 訂單編號 驗證碼」，例如:查詢 987654321 793921。\n"
         "- 輸入「解除 訂單編號 你的驗證碼 對方驗證碼」，解除已配對的資料並回到待配對，例如:解除 987654321 793921 552503。\n"
@@ -766,7 +766,7 @@ def handle_message(event):
             return
 
         if req["status"] == "matched":
-            reply = "該筆登記已配對成功，請使用「解除 訂單編號 你的驗證碼 對方驗證碼」解除配對。"
+            reply = "該筆登記已配對成功，請使用「解除 訂單編號 你的驗證碼 對方驗證碼」解除配對，例如:解除 987654321 793921 552503。"
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
             return
 
@@ -821,7 +821,7 @@ def handle_message(event):
         user_states.pop(user_id, None)
         parts = text.split()
         if len(parts) < 4:
-            reply = "解除請輸入：解除 訂單編號 你的驗證碼 對方驗證碼"
+            reply = "解除請輸入：解除 訂單編號 你的驗證碼 對方驗證碼，例如:解除 987654321 793921 552503。"
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
             return
 
@@ -853,7 +853,7 @@ def handle_message(event):
     if text == "登記":
         user_states[user_id] = {"mode": "await_form"}
         intro = (
-            "將為你進行扭蛋交換登記，請一次填寫以下 10 個欄位並直接回覆：\n"
+            "將為你進行扭蛋交換登記，請一次填寫以下 8 個欄位並直接回覆：\n"
             "注意：同一扭蛋訂單編號不可重複登記。\n"
             f"{build_form_template()}\n\n"
             f"{DISCLAIMER}"
