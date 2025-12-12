@@ -700,9 +700,9 @@ def build_confirm_message(req) -> str:
     data = {key: req[key] for key, _ in FIELD_FLOW}
     summary = format_summary(data)
     return (
-        "登記完成！以下是你的資料，請確認：\n"
+        "登記完成！以下是您的資料，請確認：\n"
         f"{summary}\n"
-        "系統會自動為你尋找互相需要的交換對象，配對成功時將主動通知。\n"
+        "系統會自動為您尋找互相需要的交換對象，配對成功時將主動通知。\n"
         "若要重新登記，可先輸入「取消」刪除待配對資料。\n\n"
         f"{DISCLAIMER}"
     )
@@ -767,7 +767,7 @@ def handle_message(event):
 
         deleted = delete_pending_by_id(req["id"])
         if deleted:
-            reply = "已為你取消該筆待配對登記。"
+            reply = "已為您取消該筆待配對登記。"
         else:
             reply = "目前此筆登記已非待配對狀態，請確認後再試。"
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
@@ -825,14 +825,14 @@ def handle_message(event):
             return
 
         reply_me = (
-            "已解除配對，該筆資料已回到待配對狀態，系統會重新為你尋找配對對象。\n"
+            "已解除配對，該筆資料已回到待配對狀態，系統會重新為您尋找配對對象。\n"
             f"訂單：{order_no}"
         )
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_me))
 
         try:
             msg_to_partner = (
-                "你的配對對象已解除配對，資料已回到待配對狀態，系統會重新為你尋找配對對象。\n"
+                "您的配對對象已解除配對，資料已回到待配對狀態，系統會重新為您尋找配對對象。\n"
                 f"訂單：{partner['order_no']}"
             )
             line_bot_api.push_message(partner["line_user_id"], TextSendMessage(text=msg_to_partner))
@@ -846,7 +846,7 @@ def handle_message(event):
     if text == "登記":
         user_states[user_id] = {"mode": "await_form"}
         intro = (
-            "將為你進行扭蛋交換登記，請一次填寫以下 8 個欄位並直接回覆：\n"
+            "將為您進行扭蛋交換登記，請一次填寫以下 8 個欄位並直接回覆：\n"
             "注意：同一扭蛋訂單編號不可重複登記。\n"
             f"{build_form_template()}\n\n"
             f"{DISCLAIMER}"
