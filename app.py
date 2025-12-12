@@ -253,6 +253,44 @@ def get_partner(req) -> Optional[dict]:
     return partner
 
 
+def unbind_match(line_user_id: str, order_no: str, my_code: str, partner_code: str):
+    conn = get_db_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT * FROM exchange_requests
+        WHERE line_user_id = %s AND order_no = %s AND verif_code = %s AND status = 'matched'
+        LIMIT 1
+        """,
+        (line_user_id, order_no, my_code),
+    )
+    me = cur.fetchone()
+    if not me:
+        cur.close()
+        conn.close()
+        return None, None, "查無配對中的此訂單或驗證碼不符，無法解除。"
+
+    partner = get_partner(me)
+    if not partner or partner["status"] != "matched":
+        cur.close()
+        conn.close()
+        return None, None, "查無對應的配對對象，請稍後再試。"
+
+    if partner["verif_code"] != partner_code:
+        cur.close()
+        conn.close()
+        return None, None, "對方驗證碼不符，無法解除綁定。"
+
+    cur.execute(
+        "UPDATE exchange_requests SET status = 'pending', match_id = NULL WHERE id IN (%s, %s)",
+        (me["id"], partner["id"]),
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+    return me, partner, None
+
+
 def normalize_place(raw: str) -> Optional[str]:
     cleaned = raw.strip()
     if not cleaned:
@@ -609,6 +647,7 @@ def build_help_message() -> str:
         "- 輸入「登記」開始扭蛋交換登記流程（一次填寫 10 個欄位）。\n"
         "- 輸入「取消 訂單編號 驗證碼」，例如:取消 查詢 987654321 793921（配對成功後不可取消）。\n"
         "- 輸入「查詢 訂單編號 驗證碼」，例如:查詢 987654321 793921。\n"
+        "- 輸入「解除 訂單編號 你的驗證碼 對方驗證碼」，解除已配對的資料並回到待配對。\n"
         "同一 LINE 使用者可登記多筆，但每個扭蛋訂單編號不得重複。\n"
         "完成登記後系統會自動嘗試配對，成功時將主動推播通知。\n\n"
         "填寫格式範例：\n"
@@ -702,6 +741,39 @@ def handle_message(event):
             reply = base_msg + f"\n\n{DISCLAIMER}"
 
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
+        return
+
+    if text.startswith("解除"):
+        user_states.pop(user_id, None)
+        parts = text.split()
+        if len(parts) < 4:
+            reply = "解除請輸入：解除 訂單編號 你的驗證碼 對方驗證碼"
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
+            return
+
+        order_no, my_code, partner_code = parts[1], parts[2], parts[3]
+        me, partner, err = unbind_match(user_id, order_no, my_code, partner_code)
+        if err:
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=err))
+            return
+
+        reply_me = (
+            "已解除配對，該筆資料已回到待配對狀態，系統會重新為你尋找配對對象。\n"
+            f"訂單：{order_no}"
+        )
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_me))
+
+        try:
+            msg_to_partner = (
+                "你的配對對象已解除配對，資料已回到待配對狀態，系統會重新為你尋找配對對象。\n"
+                f"訂單：{partner['order_no']}"
+            )
+            line_bot_api.push_message(partner["line_user_id"], TextSendMessage(text=msg_to_partner))
+        except Exception as exc:
+            print("push_message 發送解除通知失敗：", exc)
+
+        try_match_and_notify(me["id"])
+        try_match_and_notify(partner["id"])
         return
 
     if text == "登記":
