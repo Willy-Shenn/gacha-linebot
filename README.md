@@ -118,8 +118,6 @@
 - `line_user_id`：LINE 使用者 ID  
 - `contact`：聯繫方式  
 - `order_no`：扭蛋訂單編號  
-- `phone`：手機號碼  
-- `email`：電子郵件  
 - `orig_date`：原登記日期（字串型別yyyy-mm-dd）  
 - `orig_slot`：原登記時段（字串型別hh:mm-hh:mm） 
 - `orig_place`：原登記地點（字串型別）
@@ -129,6 +127,7 @@
 - `verif_code`：系統產生的 6 位數驗證碼  
 - `status`：狀態（`pending` / `matched` / `cancelled` 等）  
 - `match_id`：配對群組 ID（配對成功的兩筆資料會擁有相同的 match_id）
+- `created_at`：登記時間戳（用於配對優先順序）
 
 ---
 
