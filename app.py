@@ -2,6 +2,8 @@ import os
 import random
 import re
 import string
+import threading
+import time
 from datetime import datetime
 from typing import Dict, Optional, Tuple
 
@@ -289,6 +291,29 @@ def unbind_match(line_user_id: str, order_no: str, my_code: str, partner_code: s
     cur.close()
     conn.close()
     return me, partner, None
+
+
+def fetch_pending_ids_ordered() -> list:
+    conn = get_db_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id FROM exchange_requests WHERE status = 'pending' ORDER BY created_at ASC, id ASC"
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return [row["id"] for row in rows]
+
+
+def periodic_match_loop():
+    while True:
+        try:
+            pending_ids = fetch_pending_ids_ordered()
+            for pid in pending_ids:
+                try_match_and_notify(pid)
+        except Exception as exc:
+            print("定期配對掃描失敗：", exc)
+        time.sleep(60)
 
 
 def normalize_place(raw: str) -> Optional[str]:
@@ -657,6 +682,9 @@ def build_help_message() -> str:
 
 
 init_db()
+
+match_thread = threading.Thread(target=periodic_match_loop, daemon=True)
+match_thread.start()
 
 
 @app.route("/callback", methods=["POST"])
